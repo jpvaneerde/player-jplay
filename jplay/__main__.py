@@ -37,6 +37,9 @@ def main() -> None:
         port=config["server"]["port"],
         log_level="warning",
         access_log=False,
+        # A CD track that is still being read keeps mpv's stream request open; without a
+        # limit, stopping the service waits for the drive (systemctl restart seems to hang).
+        timeout_graceful_shutdown=3,
     )
 
 

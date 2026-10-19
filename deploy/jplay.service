@@ -17,6 +17,8 @@ StateDirectory=jplay
 Nice=-10
 Restart=on-failure
 RestartSec=3
+# Stopping takes a few seconds at most; never let a restart hang.
+TimeoutStopSec=15
 
 [Install]
 WantedBy=multi-user.target
