@@ -1,0 +1,22 @@
+[Unit]
+Description=JPlay music player
+Documentation=https://github.com/jpvaneerde/player-jplay
+Wants=network-online.target
+After=network-online.target sound.target bluetooth.service bluealsa.service
+
+[Service]
+Type=simple
+User=jplay
+Group=jplay
+SupplementaryGroups=audio cdrom bluetooth
+ExecStart=/opt/player-jplay/.venv/bin/python -m jplay --config /etc/jplay/config.toml
+Environment=PYTHONUNBUFFERED=1
+RuntimeDirectory=jplay
+StateDirectory=jplay
+# Audio first: a little more CPU priority than the rest of the system.
+Nice=-10
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

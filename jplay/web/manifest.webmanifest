@@ -1,0 +1,9 @@
+{
+  "name": "JPlay",
+  "short_name": "JPlay",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#1b2026",
+  "theme_color": "#1b2026",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml" }]
+}

@@ -1,0 +1,63 @@
+# JPlay configuration. Copy to /etc/jplay/config.toml (the installer does this).
+# Anything you leave out uses the built-in default shown here.
+
+[server]
+host = "0.0.0.0"
+port = 8080
+# Shown in the web UI, and used as the Spotify Connect and Bluetooth name.
+name = "JPlay"
+
+[paths]
+state_dir = "/var/lib/jplay"     # favourites, CD metadata cache, Spotify credentials
+runtime_dir = "/run/jplay"       # mpv socket and temporary playlists
+
+[audio]
+# The ALSA device every source plays to. hw: gives bit-perfect output.
+# HiFiBerry DAC2 HD:      hw:CARD=sndrpihifiberry,DEV=0
+# Find yours with:        aplay -L | grep -A1 ^hw:
+# "null" plays silently (for testing on a PC).
+device = "hw:CARD=sndrpihifiberry,DEV=0"
+# Hardware volume through amixer. Leave mixer_control empty for a fixed line-level output
+# (volume on your amplifier). List the controls with: amixer -c sndrpihifiberry scontrols
+mixer_card = "sndrpihifiberry"
+mixer_control = ""
+
+[radio]
+enabled = true
+radio_browser_url = "https://de1.api.radio-browser.info"
+
+[plex]
+enabled = true
+# Your Plex Media Server, e.g. "http://192.168.1.10:32400"
+url = ""
+# X-Plex-Token. How to find it: https://support.plex.tv/articles/204059436
+# You can also set it in the environment as JPLAY_PLEX_TOKEN instead.
+token = ""
+# Mark tracks as played in Plex once half of them (or 4 minutes) has played.
+scrobble = true
+
+[cd]
+enabled = true
+device = "/dev/sr0"
+read_speed = 4          # lower = quieter drive while the disc is read into memory
+cache_dir = "/dev/shm/jplay-cd"
+autoplay = true         # start playing when a disc goes in
+musicbrainz = true      # look up album and track names
+
+[spotify]
+enabled = true
+librespot_binary = "librespot"
+device_name = ""        # defaults to server.name
+bitrate = 320
+extra_args = []
+
+[bluetooth]
+enabled = true
+alias = ""              # defaults to server.name
+discoverable_seconds = 180
+
+[webhook]
+# Every track that plays at least min_seconds (on any source) is POSTed here as JSON,
+# e.g. for JPlay Spins. Leave empty to switch it off.
+url = ""
+min_seconds = 30
