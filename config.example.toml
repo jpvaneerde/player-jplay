@@ -44,9 +44,12 @@ scrobble = true
 [cd]
 enabled = true
 device = "/dev/sr0"
-read_speed = 4          # lower = quieter drive while the disc is read into memory
+# The disc is read into memory as soon as it goes in; playback can start after a second
+# or two, while the rest is still being read.
+read_speed = 0          # 0 = as fast as the drive goes; e.g. 8 for a quieter but slower read
+paranoia = "light"      # error correction: "light" (fast), "full" (slow, scratched discs), "off"
 cache_dir = "/dev/shm/jplay-cd"
-autoplay = true         # start playing when a disc goes in
+autoplay = false        # true = start playing (and take over) when a disc goes in
 musicbrainz = true      # look up album and track names
 
 [spotify]

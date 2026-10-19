@@ -48,9 +48,16 @@ DEFAULTS: dict[str, Any] = {
     "cd": {
         "enabled": True,
         "device": "/dev/sr0",
-        "read_speed": 4,  # lower = quieter drive while reading
+        # Drive speed while reading into memory: 0 = as fast as the drive goes.
+        # A cap (e.g. 8) makes a noisy drive quieter but playback waits longer at the start.
+        "read_speed": 0,
+        # Error correction: "light" (fast, fine for clean discs), "full" (slow, for
+        # scratched discs) or "off".
+        "paranoia": "light",
         "cache_dir": "/dev/shm/jplay-cd",  # tracks are read into RAM
-        "autoplay": True,  # start playing when a disc is inserted
+        # Reading always starts when a disc goes in; this also starts playing it
+        # (taking over from whatever plays).
+        "autoplay": False,
         "paranoia_binary": "cd-paranoia",
         "musicbrainz": True,
     },

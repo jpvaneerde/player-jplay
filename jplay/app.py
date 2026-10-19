@@ -13,7 +13,7 @@ from typing import Any
 
 import httpx
 from fastapi import APIRouter, FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -27,7 +27,7 @@ from .core.store import StateStore
 from .core.volume import Volume
 from .sources.base import SourceError
 from .sources.bluetooth import BluetoothSource
-from .sources.cd import CdSource
+from .sources.cd import CdSource, parse_range
 from .sources.plex import PlexSource
 from .sources.radio import RadioSource
 from .sources.spotify import SpotifySource
@@ -264,6 +264,27 @@ def api_router() -> APIRouter:
     async def cd_eject(request: Request) -> dict[str, Any]:
         await src(request, "cd").eject()
         return {"ok": True}
+
+    @r.get("/cd/stream/{token}/{number}.wav", include_in_schema=False)
+    async def cd_stream(request: Request, token: str, number: int) -> Response:
+        """The disc as it is being read, for mpv on this machine. Waits for the drive."""
+        if (request.client.host if request.client else "") not in ("127.0.0.1", "::1"):
+            raise SourceError("Forbidden", 403)
+        buf = src(request, "cd").buffer_for(token, number)
+        if buf is None:
+            raise SourceError("No such track on the disc in the drive", 404)
+        size = buf.size
+        rng = parse_range(request.headers.get("range"), size)
+        headers = {"Accept-Ranges": "bytes", "Cache-Control": "no-store"}
+        if request.headers.get("range") and rng is None:
+            return Response(status_code=416, headers={**headers, "Content-Range": f"bytes */{size}"})
+        start, end = rng or (0, size - 1)
+        headers["Content-Length"] = str(end - start + 1)
+        if rng:
+            headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+        return StreamingResponse(
+            buf.stream(start, end), status_code=206 if rng else 200, media_type="audio/wav", headers=headers
+        )
 
     # -- spotify (called by the librespot hook on this machine)
     @r.post("/spotify/event")

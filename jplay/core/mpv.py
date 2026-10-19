@@ -77,6 +77,7 @@ class MpvEngine:
             "--input-default-bindings=no",
             f"--input-ipc-server={self.socket_path}",
             "--gapless-audio=yes",
+            "--prefetch-playlist=yes",  # open the next track early, so track changes are seamless
             "--keep-open=no",
             "--audio-display=no",
             "--replaygain=no",

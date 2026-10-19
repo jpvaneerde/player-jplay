@@ -77,18 +77,42 @@ let tab = localStorage.getItem("jplay.tab") || null;
 const source = (id) => S?.sources.find((s) => s.id === id);
 const isActive = (id) => S?.active === id;
 
+// ------------------------------------------------------------------ theme (as in the rest of JPlay)
+const THEMES = [["dark", "Dark"], ["light", "Light"], ["retro", "Retro"]];
+const THEME_BG = { dark: "#0f111a", light: "#f3f4f6", retro: "#1c1917" };
+function applyTheme(t) {
+  document.documentElement.className = t;
+  $("theme-color").setAttribute("content", THEME_BG[t]);
+  const i = THEMES.findIndex(([id]) => id === t);
+  const next = THEMES[(i + 1) % THEMES.length];
+  $("theme-btn").title = `Theme: ${THEMES[i][1]} (tap for ${next[1].toLowerCase()})`;
+}
+applyTheme(document.documentElement.className || "dark");
+$("theme-btn").addEventListener("click", () => {
+  const i = THEMES.findIndex(([id]) => id === document.documentElement.className);
+  const t = THEMES[(i + 1) % THEMES.length][0];
+  try { localStorage.setItem("jplay.theme", t); } catch (e) { /* private mode */ }
+  applyTheme(t);
+});
+
 // ------------------------------------------------------------------ deck (now playing)
 function renderDeck() {
   const np = S.now_playing;
   const caps = S.capabilities || {};
   $("player-name").textContent = S.player;
+  $("player-name").classList.toggle("same", S.player.trim().toLowerCase() === "jplay");
+  document.body.classList.toggle("playing", np.state === "playing");
   document.title = np.title && np.state === "playing" ? `${np.title} – ${S.player}` : S.player;
 
   const art = $("np-art");
   if (np.art_url) {
-    if (art.getAttribute("src") !== np.art_url) art.src = np.art_url;
+    if (art.getAttribute("src") !== np.art_url) {
+      art.onerror = () => { art.hidden = true; art.parentElement.classList.add("nocover"); };
+      art.src = np.art_url;
+    }
     art.hidden = false;
   } else art.hidden = true;
+  art.parentElement.classList.toggle("nocover", art.hidden);
 
   const title = $("np-title");
   const newTitle = np.title || (S.active ? source(S.active)?.name : "Nothing playing");
@@ -468,14 +492,16 @@ const cd = {
         "reading-toc": ["Reading the disc", "This takes a few seconds."],
         data: ["This isn't an audio CD", "Data discs and DVDs can't be played. Eject it and insert an audio CD."],
         error: ["The disc couldn't be read", "Clean the disc and try again."],
-      }[d.status] || ["No disc", s.reason || "Insert an audio CD. It starts playing on its own."];
+      }[d.status] || ["No disc", s.reason || "Insert an audio CD. It is read into memory straight away; press play when you want to hear it."];
       this.el.replaceChildren(...kids(h("div", { class: "notice" }, h("strong", {}, msg[0]), msg[1]),
         d.status === "data" ? h("div", { class: "row", style: "margin-top:12px" }, h("button", { class: "btn", onclick: () => api("POST", "/cd/eject").catch(() => {}) }, "Eject")) : null));
       return;
     }
     const inMem = disc.tracks.filter((t) => t.in_memory).length;
-    const reading = d.reading?.done ? "The whole disc is in memory; the drive is resting."
-      : d.reading?.track ? `Reading track ${d.reading.track} into memory (${inMem} of ${disc.tracks.length} done).` : "";
+    const failed = disc.tracks.filter((t) => t.failed).length;
+    const reading = d.reading?.done
+      ? (failed ? `The disc is read, but ${failed} track${failed > 1 ? "s" : ""} couldn't be read.` : "The whole disc is in memory; the drive is resting.")
+      : d.reading?.track ? `Reading track ${d.reading.track} (${d.reading.percent}%). ${inMem} of ${disc.tracks.length} tracks in memory. You can play right away.` : "";
     const total = disc.tracks.reduce((a, t) => a + (t.duration || 0), 0);
     this.el.replaceChildren(...kids(
       h("div", { class: "album-head" }, img(disc.art_url, ""),
@@ -485,10 +511,10 @@ const cd = {
             h("button", { class: "btn", onclick: () => api("POST", "/cd/eject").catch(() => {}) }, "Eject")))),
       reading ? h("p", { class: "hint" }, reading) : null,
       h("ul", { class: "list" }, ...disc.tracks.map((t) =>
-        h("li", { class: `item tap${t.number === cur ? " now" : ""}`, onclick: () => api("POST", "/cd/play", { track: t.number }).catch(() => {}) },
+        h("li", { class: `item tap${t.number === cur ? " now" : ""}`, onclick: () => !t.failed && api("POST", "/cd/play", { track: t.number }).catch(() => {}) },
           h("span", { class: "num" }, t.number),
           h("div", { class: "body" }, h("div", { class: "name" }, t.title), t.artist && t.artist !== disc.artist ? h("div", { class: "meta" }, t.artist) : null),
-          h("span", { class: "side" }, h("span", { class: `mem${t.in_memory ? " in" : ""}`, title: t.in_memory ? "In memory" : "Not read yet" }), fmt(t.duration))))),
+          h("span", { class: "side" }, h("span", { class: `mem${t.in_memory ? " in" : ""}`, title: t.failed ? "Couldn't be read" : t.in_memory ? "In memory" : d.reading?.track === t.number ? "Reading now" : "Not read yet" }), fmt(t.duration))))),
     ));
   },
 };

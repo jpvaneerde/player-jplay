@@ -4,11 +4,11 @@ A headless music player for a Raspberry Pi with a good DAC. One box, five source
 
 - **Radio**: favourites, station search through [Radio Browser](https://www.radio-browser.info), now-playing titles from the stream, automatic reconnect.
 - **Plex**: browse your music library through the Plex API (recently added, albums, artists, playlists, search) and play the original files direct. FLAC stays FLAC; no transcoding. Tracks are marked as played in Plex.
-- **CD**: insert a disc and it plays. The disc is read into RAM with cd-paranoia, so there are no skips and the drive rests after the first minutes. Album and track names come from MusicBrainz.
+- **CD**: insert a disc and it is read into RAM with cd-paranoia straight away, without interrupting what is playing. Press play and the music starts after a second or two, while the rest of the disc is still being read; once it is all in memory the drive rests. No skips, instant seeking and repeats. Album and track names come from MusicBrainz.
 - **Spotify Connect**: through librespot. Pick the player in the Spotify app and it takes over.
 - **Bluetooth**: phones play to it like a Bluetooth speaker (A2DP), with track info and controls.
 
-Only one source plays at a time. A source that starts on its own (a phone streaming, Spotify selected in the app, a CD inserted) takes over from whatever was playing.
+Only one source plays at a time. A source that starts on its own (a phone streaming, Spotify selected in the app) takes over from whatever was playing. Inserting a CD doesn't: it is only read until you press play (set `cd.autoplay = true` if you want it to take over).
 
 ## How it works
 
@@ -79,7 +79,7 @@ and restart: `sudo systemctl restart jplay`. Open `http://<pi-name>.local:8080`.
 
 ## The web interface
 
-The page shows what is playing on a display modelled on a classic CD player's VFD, with the transport keys and volume below it. The source selector works like an amplifier's input selector: the amber lamp shows which source is playing through the DAC. Add it to your phone's home screen to use it like an app.
+The page has the same look as the rest of JPlay (JPlay, JPlay Records, JPlaying Now): dark, light and retro themes (the round button at the top right), emerald accent, and a spinning record when there is no cover. Now playing, transport keys and volume are at the top; below them the sources, where the green lamp shows which one is playing through the DAC. Add it to your phone's home screen to use it like an app.
 
 ## API
 

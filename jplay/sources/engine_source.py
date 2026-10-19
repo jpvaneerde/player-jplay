@@ -31,6 +31,12 @@ class EngineSource(Source):
         """Become the active source and make sure mpv runs for us."""
         await self.ctx.manager.activate(self.id)
         await self.engine.acquire(self)
+        for name, value in {"network-timeout": 15, **self.engine_properties()}.items():
+            await self.engine.command("set_property", name, value)
+
+    def engine_properties(self) -> dict[str, Any]:
+        """mpv settings this source needs while it owns the engine."""
+        return {}
 
     async def deactivate(self) -> None:
         await self.engine.release(self)

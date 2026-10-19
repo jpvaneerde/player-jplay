@@ -3,6 +3,8 @@ from jplay.core.models import NowPlaying, PlayState
 from jplay.core.playlog import PlayLogger
 from jplay.sources.cd import (
     disc_id_from_toc,
+    parse_range,
+    wav_header,
     musicbrainz_disc_id,
     parse_musicbrainz,
     parse_paranoia_toc,
@@ -113,3 +115,21 @@ def test_playlog_posts_once_after_threshold(monkeypatch):
         log.observe("plex", np2)
         clock[0] += 1
     assert len(sent) == 1
+
+
+def test_parse_range():
+    assert parse_range("bytes=0-99", 1000) == (0, 99)
+    assert parse_range("bytes=500-", 1000) == (500, 999)
+    assert parse_range("bytes=-100", 1000) == (900, 999)
+    assert parse_range("bytes=900-5000", 1000) == (900, 999)
+    assert parse_range("bytes=1000-", 1000) is None
+    assert parse_range(None, 1000) is None
+
+
+def test_wav_header_is_valid():
+    import io
+    import wave
+
+    data_len = 4 * 44100  # one second
+    w = wave.open(io.BytesIO(wav_header(data_len) + b"\0" * data_len))
+    assert (w.getnchannels(), w.getsampwidth(), w.getframerate(), w.getnframes()) == (2, 2, 44100, 44100)

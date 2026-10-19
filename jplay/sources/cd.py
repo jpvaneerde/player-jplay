@@ -1,8 +1,11 @@
-"""Audio CD: read the disc into RAM with cd-paranoia, then play from memory.
+"""Audio CD: play while reading, keep the disc in RAM.
 
 * The drive is polled with Linux CD-ROM ioctls (no udev dependency).
-* Tracks are read in play order into a tmpfs (/dev/shm). Playback starts as soon as the
-  first needed track is in, the rest follow in the background; then the drive spins down.
+* Inserting a disc starts reading it into a tmpfs (/dev/shm) straight away, in play order,
+  but never starts playback or takes over from the source that is playing.
+* Playback starts after a second or two: mpv streams each track from JPlay's own HTTP
+  endpoint (/api/v1/cd/stream/...), which hands out what cd-paranoia has read so far and
+  waits when mpv gets ahead of the drive. Once the whole disc is in RAM the drive rests.
 * Disc metadata comes from MusicBrainz (by disc ID) and is cached on disk.
 """
 from __future__ import annotations
@@ -16,14 +19,23 @@ import logging
 import os
 import re
 import shutil
+import struct
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncIterator
 
 from ..core.models import Capabilities, PlayState
 from .base import SourceError
 from .engine_source import EngineSource
 
 log = logging.getLogger(__name__)
+
+BYTES_PER_SECTOR = 2352  # 1/75 s of 16-bit stereo 44.1 kHz audio
+WAV_HEADER_BYTES = 44
+# How long the player may wait for a slow drive before it gives up on a stream.
+STREAM_TIMEOUT = 120
+
+# cd-paranoia error-correction levels, from careful to fast.
+PARANOIA_FLAGS = {"full": [], "light": ["-Y"], "off": ["-Z"]}
 
 # linux/cdrom.h
 CDROM_DRIVE_STATUS = 0x5326
@@ -120,6 +132,93 @@ def _drive_status(device: str) -> str:
         os.close(fd)
 
 
+def wav_header(data_bytes: int) -> bytes:
+    """44-byte header for 16-bit stereo 44.1 kHz PCM of the given length."""
+    return (
+        b"RIFF" + struct.pack("<I", 36 + data_bytes) + b"WAVE"
+        + b"fmt " + struct.pack("<IHHIIHH", 16, 1, 2, 44100, 44100 * 4, 4, 16)
+        + b"data" + struct.pack("<I", data_bytes)
+    )
+
+
+def parse_range(header: str | None, size: int) -> tuple[int, int] | None:
+    """'bytes=100-' / 'bytes=100-199' -> (start, end) inclusive; None if absent or unusable."""
+    m = re.fullmatch(r"\s*bytes=(\d*)-(\d*)\s*", header or "")
+    if not m or (not m.group(1) and not m.group(2)):
+        return None
+    if m.group(1):
+        start = int(m.group(1))
+        end = int(m.group(2)) if m.group(2) else size - 1
+    else:  # suffix range: the last N bytes
+        start, end = max(0, size - int(m.group(2))), size - 1
+    if start >= size:
+        return None
+    return start, min(end, size - 1)
+
+
+class TrackBuffer:
+    """One track in RAM: a WAV file that cd-paranoia is (or was) filling.
+
+    Readers wait on it for more bytes; `generation` changes when the buffer is thrown away
+    (re-read, eject), which ends every stream still reading the old data.
+    """
+
+    def __init__(self, number: int, path: Path, sectors: int):
+        self.number = number
+        self.path = path
+        self.size = WAV_HEADER_BYTES + sectors * BYTES_PER_SECTOR
+        self.written = 0
+        self.done = False
+        self.failed = False
+        self.generation = 0
+        self._changed = asyncio.Condition()
+
+    @property
+    def percent(self) -> int:
+        return 100 if self.done else int(100 * self.written / self.size)
+
+    async def notify(self) -> None:
+        async with self._changed:
+            self._changed.notify_all()
+
+    async def reset(self) -> None:
+        self.generation += 1
+        self.written = 0
+        self.done = self.failed = False
+        with contextlib.suppress(FileNotFoundError):
+            self.path.unlink()
+        await self.notify()
+
+    async def wait_for(self, offset: int, generation: int, timeout: float) -> bool:
+        """Wait until byte `offset` is in. False if the buffer was dropped or the wait timed out."""
+        async def ready() -> bool:
+            async with self._changed:
+                await self._changed.wait_for(
+                    lambda: self.written > offset or self.done or self.failed or self.generation != generation
+                )
+            return self.written > offset and self.generation == generation
+
+        try:
+            return await asyncio.wait_for(ready(), timeout)
+        except asyncio.TimeoutError:
+            return False
+
+    async def stream(self, start: int, end: int, timeout: float = STREAM_TIMEOUT) -> AsyncIterator[bytes]:
+        """Bytes start..end (inclusive), as soon as the drive has read them."""
+        generation = self.generation
+        pos = start
+        while pos <= end:
+            if not await self.wait_for(pos, generation, timeout):
+                return
+            with open(self.path, "rb") as fh:
+                fh.seek(pos)
+                chunk = fh.read(min(self.written, end + 1) - pos)
+            if not chunk:
+                return
+            pos += len(chunk)
+            yield chunk
+
+
 # ---------------------------------------------------------------- the source
 class CdSource(EngineSource):
     id = "cd"
@@ -133,16 +232,14 @@ class CdSource(EngineSource):
         self.meta_dir = ctx.state_dir / "cd-metadata"
         self.status = "empty"  # empty | reading-toc | ready | data | error
         self.disc: dict[str, Any] | None = None
-        self.ripped: set[int] = set()
-        self.rip_progress: dict[str, Any] = {}
+        self.buffers: dict[int, TrackBuffer] = {}
+        self.reading: int | None = None  # track cd-paranoia is reading right now
         self.base: int | None = None  # track number at mpv playlist index 0
-        self.appended_upto: int | None = None  # last track number in mpv's playlist
         self.current: int | None = None
+        self.token = ""  # changes with every disc, so stale stream URLs fail
+        self.drive_status = _drive_status  # replaceable in tests
         self._poll_task: asyncio.Task[None] | None = None
-        self._rip_task: asyncio.Task[None] | None = None
-        self._rip_proc: asyncio.subprocess.Process | None = None
-        self._rip_wakeup = asyncio.Event()
-        self._track_ready: dict[int, asyncio.Event] = {}
+        self._read_task: asyncio.Task[None] | None = None
 
     # ------------------------------------------------------------ startup / polling
     async def start(self) -> None:
@@ -168,19 +265,22 @@ class CdSource(EngineSource):
     async def shutdown(self) -> None:
         if self._poll_task:
             self._poll_task.cancel()
-        await self._stop_ripping()
+        await self._stop_reading()
         self._clear_cache()
 
     async def _poll(self) -> None:
         last = None
         while True:
             try:
-                state = await asyncio.to_thread(_drive_status, self.device)
+                state = await asyncio.to_thread(self.drive_status, self.device)
             except Exception:
                 state = "error"
             if state != last:
                 last = state
-                await self._drive_changed(state)
+                try:
+                    await self._drive_changed(state)
+                except Exception:
+                    log.exception("Handling the CD drive failed")
             await asyncio.sleep(1.5)
 
     async def _drive_changed(self, state: str) -> None:
@@ -227,15 +327,20 @@ class CdSource(EngineSource):
                 for t in toc
             ],
         }
-        self.ripped.clear()
-        self._track_ready = {t["number"]: asyncio.Event() for t in toc}
-        self.status = "ready"
+        self.token = os.urandom(6).hex()
         self._clear_cache()
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        self._rip_task = asyncio.create_task(self._rip_loop(), name="cd-rip")
+        self.buffers = {
+            t["number"]: TrackBuffer(t["number"], self.cache_dir / f"track{t['number']:02d}.wav", t["length"])
+            for t in toc
+        }
+        self.base = self.current = None
+        self.status = "ready"
+        # Start reading straight away. This doesn't touch playback: whatever plays keeps playing.
+        self._read_task = asyncio.create_task(self._read_loop(), name="cd-read")
         self.ctx.manager.notify(True)
         asyncio.create_task(self._lookup_metadata(disc_id))
-        if self.cfg.get("autoplay", True):
+        if self.cfg.get("autoplay", False):
             asyncio.create_task(self._autoplay(toc[0]["number"]))
 
     async def _autoplay(self, number: int) -> None:
@@ -245,17 +350,16 @@ class CdSource(EngineSource):
             log.info("Autoplay skipped: %s", exc)
 
     async def _disc_gone(self, data: bool = False) -> None:
-        had_disc = self.disc is not None
-        if self.active and had_disc:
+        if self.disc is not None and self.owns_engine:
             await self.engine.release(self)
-        await self._stop_ripping()
+        await self._stop_reading()
+        for buf in self.buffers.values():
+            await buf.reset()  # ends any stream still reading this disc
+        self.buffers = {}
         self._clear_cache()
-        for ev in self._track_ready.values():
-            ev.set()  # release any play_track() still waiting for a read
         self.disc = None
-        self.ripped.clear()
-        self.rip_progress = {}
-        self.base = self.appended_upto = self.current = None
+        self.token = ""
+        self.base = self.current = None
         self.status = "data" if data else "empty"
         self.reset_now_playing()
 
@@ -312,73 +416,135 @@ class CdSource(EngineSource):
         self.ctx.manager.notify(True)
 
     # ------------------------------------------------------------ reading the disc
-    def _track_path(self, number: int) -> Path:
-        return self.cache_dir / f"track{number:02d}.wav"
-
-    def _next_to_rip(self) -> int | None:
-        if not self.disc:
-            return None
-        numbers = [t["number"] for t in self.disc["tracks"]]
-        start = self.base if self.base in numbers else numbers[0]
-        i = numbers.index(start)
-        for n in numbers[i:] + numbers[:i]:  # play order first, then wrap around
-            if n not in self.ripped:
-                return n
-        return None
-
-    async def _rip_loop(self) -> None:
-        speed = str(self.cfg.get("read_speed", 4))
-        while True:
-            number = self._next_to_rip()
-            if number is None:
-                self.rip_progress = {"done": True}
-                self.ctx.manager.notify(True)
-                log.info("Whole disc is in memory")
-                return
-            target = self._track_path(number)
-            partial = target.with_suffix(".part.wav")
-            self.rip_progress = {"track": number, "done": False}
-            self.ctx.manager.notify(True)
-            self._rip_proc = await asyncio.create_subprocess_exec(
-                self.paranoia, "-q", "-d", self.device, "-S", speed, "-w", str(number), str(partial),
-                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
-            )
-            _, err = await self._rip_proc.communicate()
-            code = self._rip_proc.returncode
-            self._rip_proc = None
-            if code != 0 or not partial.exists():
-                log.error("Reading track %s failed: %s", number, err.decode(errors="replace")[-300:])
-                self.ripped.add(number)  # skip it rather than loop forever
-                self._track_ready[number].set()  # wake anyone waiting; they will see no file
-                self.update(extra={**self.np.extra, "error": f"Track {number} could not be read"})
-                continue
-            partial.rename(target)
-            self.ripped.add(number)
-            self._track_ready[number].set()
-            await self._append_ready_tracks()
-
-    async def _stop_ripping(self) -> None:
-        if self._rip_proc and self._rip_proc.returncode is None:
-            with contextlib.suppress(ProcessLookupError):
-                self._rip_proc.kill()
-        if self._rip_task:
-            self._rip_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await self._rip_task
-        self._rip_task = None
-        self._rip_proc = None
-
-    async def _reprioritise(self, number: int) -> None:
-        """After a jump to an unread track: read that one next."""
-        if self.rip_progress.get("track") == number and self._rip_proc is not None:
-            return  # already reading it
-        await self._stop_ripping()
-        self._rip_task = asyncio.create_task(self._rip_loop(), name="cd-rip")
-
-    # ------------------------------------------------------------ playback
     def _numbers(self) -> list[int]:
         return [t["number"] for t in self.disc["tracks"]] if self.disc else []
 
+    def _next_to_read(self) -> int | None:
+        numbers = self._numbers()
+        if not numbers:
+            return None
+        # Start from the track that is playing (or about to), then wrap around.
+        start = next((n for n in (self.current, self.base) if n in numbers), numbers[0])
+        i = numbers.index(start)
+        for n in numbers[i:] + numbers[:i]:
+            buf = self.buffers.get(n)
+            if buf and not buf.done and not buf.failed:
+                return n
+        return None
+
+    def _paranoia_args(self, number: int) -> list[str]:
+        args = [self.paranoia, "-q", "-d", self.device]
+        speed = int(self.cfg.get("read_speed", 0) or 0)
+        if speed > 0:
+            args += ["-S", str(speed)]
+        args += PARANOIA_FLAGS.get(self.cfg.get("paranoia", "light"), PARANOIA_FLAGS["light"])
+        # -r: raw samples (no WAV header) in host byte order, which is little-endian on a Pi.
+        return args + ["-r", str(number), "-"]
+
+    async def _read_loop(self) -> None:
+        while True:
+            number = self._next_to_read()
+            if number is None:
+                self.reading = None
+                self.ctx.manager.notify(True)
+                if any(b.failed for b in self.buffers.values()):
+                    log.warning("Disc read with errors")
+                else:
+                    log.info("Whole disc is in memory; the drive can rest")
+                return
+            await self._read_track(self.buffers[number])
+
+    async def _read_track(self, buf: TrackBuffer) -> None:
+        self.reading = buf.number
+        if buf.written or buf.done or buf.failed:
+            # Leftovers from an interrupted read. (A fresh buffer is left alone: the player
+            # may already be waiting on it, e.g. for the next track.)
+            await buf.reset()
+        self.ctx.manager.notify(True)
+        proc = await asyncio.create_subprocess_exec(
+            *self._paranoia_args(buf.number),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        assert proc.stdout is not None and proc.stderr is not None
+        err_task = asyncio.create_task(proc.stderr.read())
+        try:
+            with open(buf.path, "wb") as fh:
+                fh.write(wav_header(buf.size - WAV_HEADER_BYTES))
+                fh.flush()
+                buf.written = WAV_HEADER_BYTES
+                await buf.notify()
+                while True:
+                    chunk = await proc.stdout.read(256 * 1024)
+                    if not chunk:
+                        break
+                    room = buf.size - buf.written
+                    fh.write(chunk[:room])
+                    fh.flush()
+                    buf.written += min(len(chunk), room)
+                    await buf.notify()
+                    self.ctx.manager.notify(False)  # progress for the UI, rate-limited
+            code = await proc.wait()
+            err = (await err_task).decode(errors="replace")
+            if code != 0:
+                log.error("Reading track %s failed (%s): %s", buf.number, code, err[-300:])
+                buf.failed = True
+                self.update(extra={**self.np.extra, "error": f"Track {buf.number} could not be read"})
+            elif buf.written < buf.size:
+                # The drive delivered a little less than the TOC promised; pad with silence
+                # so the length the player was told stays true.
+                with open(buf.path, "ab") as fh:
+                    fh.write(b"\0" * (buf.size - buf.written))
+                buf.written = buf.size
+            if not buf.failed:
+                buf.done = True
+            await buf.notify()
+            self.ctx.manager.notify(True)
+        except asyncio.CancelledError:
+            # Interrupted (jump to another track, eject): this partial read is thrown away.
+            if proc.returncode is None:
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
+                with contextlib.suppress(Exception):
+                    await proc.wait()
+            err_task.cancel()
+            await buf.reset()
+            raise
+        finally:
+            self.reading = None if self.reading == buf.number else self.reading
+
+    async def _stop_reading(self) -> None:
+        task, self._read_task = self._read_task, None
+        if task and not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+        self.reading = None
+
+    async def _reprioritise(self, number: int) -> None:
+        """Make sure track `number` is read next (or now)."""
+        buf = self.buffers.get(number)
+        if buf is None or buf.done or self.reading == number:
+            return
+        if self._read_task and not self._read_task.done() and self.reading is not None:
+            await self._stop_reading()
+        if not self._read_task or self._read_task.done():
+            self._read_task = asyncio.create_task(self._read_loop(), name="cd-read")
+
+    # ------------------------------------------------------------ streaming to mpv
+    def buffer_for(self, token: str, number: int) -> TrackBuffer | None:
+        if not token or token != self.token:
+            return None
+        return self.buffers.get(number)
+
+    def _stream_url(self, number: int) -> str:
+        port = self.ctx.config["server"]["port"]
+        return f"http://127.0.0.1:{port}/api/v1/cd/stream/{self.token}/{number}.wav"
+
+    def engine_properties(self) -> dict[str, Any]:
+        # A scratched disc can make the drive pause; let mpv wait for it.
+        return {"network-timeout": STREAM_TIMEOUT}
+
+    # ------------------------------------------------------------ playback
     def _track(self, number: int) -> dict[str, Any]:
         for t in self.disc["tracks"] if self.disc else []:
             if t["number"] == number:
@@ -410,36 +576,21 @@ class CdSource(EngineSource):
         if not self.disc:
             raise SourceError("No audio CD in the drive", 409)
         self._track(number)
+        if self.buffers[number].failed:
+            raise SourceError(f"Track {number} could not be read from the disc", 500)
         await self.claim()
         self.base = number
         self._show(number, PlayState.LOADING)
-        if number not in self.ripped:
-            await self._reprioritise(number)
-            await self._track_ready[number].wait()
-            if self.base != number or not self.owns_engine or not self.disc:
-                return  # user moved on (or the disc came out) while we waited
-        if not self._track_path(number).exists():
-            self.update(state=PlayState.STOPPED)
-            raise SourceError(f"Track {number} could not be read from the disc", 500)
-        await self.engine.command("set_property", "pause", False)
-        await self.engine.command("loadfile", str(self._track_path(number)), "replace")
-        self.appended_upto = number
-        await self._append_ready_tracks()
-
-    async def _append_ready_tracks(self) -> None:
-        """Keep mpv's playlist filled with the following tracks, for gapless playback."""
-        if self.appended_upto is None or not self.owns_engine:
-            return
+        await self._reprioritise(number)
+        # The whole rest of the disc goes into mpv's playlist at once: gapless, and each
+        # stream simply waits for the drive if mpv gets there first.
         numbers = self._numbers()
-        while True:
-            i = numbers.index(self.appended_upto)
-            if i + 1 >= len(numbers):
-                return
-            nxt = numbers[i + 1]
-            if nxt not in self.ripped or not self._track_path(nxt).exists():
-                return
-            await self.engine.command("loadfile", str(self._track_path(nxt)), "append")
-            self.appended_upto = nxt
+        urls = [self._stream_url(n) for n in numbers[numbers.index(number):] if not self.buffers[n].failed]
+        playlist = self.ctx.runtime_dir / "cd-queue.m3u"
+        playlist.parent.mkdir(parents=True, exist_ok=True)
+        playlist.write_text("#EXTM3U\n" + "".join(u + "\n" for u in urls), "utf-8")
+        await self.engine.command("set_property", "pause", False)
+        await self.engine.command("loadlist", str(playlist), "replace")
 
     def capabilities(self) -> Capabilities:
         has = self.disc is not None
@@ -449,8 +600,17 @@ class CdSource(EngineSource):
         disc = None
         if self.disc:
             disc = dict(self.disc)
-            disc["tracks"] = [dict(t, in_memory=t["number"] in self.ripped) for t in self.disc["tracks"]]
-        return {"status": self.status, "disc": disc, "reading": self.rip_progress, "device": self.device}
+            disc["tracks"] = [
+                dict(t, in_memory=self.buffers[t["number"]].done, failed=self.buffers[t["number"]].failed)
+                for t in self.disc["tracks"]
+            ]
+        reading: dict[str, Any] = {}
+        if self.disc:
+            if self.reading is not None and self.reading in self.buffers:
+                reading = {"track": self.reading, "percent": self.buffers[self.reading].percent, "done": False}
+            elif all(b.done or b.failed for b in self.buffers.values()):
+                reading = {"done": True}
+        return {"status": self.status, "disc": disc, "reading": reading, "device": self.device}
 
     async def play(self) -> None:
         if self.owns_engine and self.np.state == PlayState.PAUSED:
@@ -467,11 +627,10 @@ class CdSource(EngineSource):
         i = numbers.index(self.current)
         if i + 1 >= len(numbers):
             raise SourceError("This is the last track")
-        nxt = numbers[i + 1]
-        if self.owns_engine and self.appended_upto is not None and nxt <= self.appended_upto:
+        if self.owns_engine:
             await self.engine.command("playlist-next", "weak")
         else:
-            await self.play_track(nxt)
+            await self.play_track(numbers[i + 1])
 
     async def previous(self) -> None:
         numbers = self._numbers()
@@ -489,7 +648,8 @@ class CdSource(EngineSource):
     async def on_playlist_pos(self, index: int) -> None:
         if self.base is None or not self.disc:
             return
-        numbers = self._numbers()
-        i = numbers.index(self.base) + index
-        if i < len(numbers) and numbers[i] != self.current:
-            self._show(numbers[i])
+        numbers = [n for n in self._numbers()[self._numbers().index(self.base):] if not self.buffers[n].failed]
+        if index < len(numbers) and numbers[index] != self.current:
+            self._show(numbers[index])
+            # Keep the drive working on whatever is now needed first.
+            await self._reprioritise(numbers[index])
