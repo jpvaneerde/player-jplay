@@ -17,8 +17,14 @@ LAST_KEY = "radio.last_station"
 
 
 def normalize_station(raw: dict[str, Any]) -> dict[str, Any]:
-    """Radio Browser station -> the compact shape we store and send to the UI."""
-    tags = [t.strip() for t in (raw.get("tags") or "").split(",") if t.strip()]
+    """Radio Browser station (or one we normalised before) -> the compact shape we store.
+
+    Must accept its own output too: the UI sends back stations it got from us.
+    """
+    raw_tags = raw.get("tags") or []
+    if isinstance(raw_tags, str):
+        raw_tags = raw_tags.split(",")
+    tags = [str(t).strip() for t in raw_tags if str(t).strip()]
     return {
         "uuid": raw.get("stationuuid") or raw.get("uuid") or raw.get("url", ""),
         "name": (raw.get("name") or "").strip() or "Unnamed station",

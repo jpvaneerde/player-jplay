@@ -73,6 +73,14 @@ def test_parse_musicbrainz_picks_matching_medium():
     assert parse_musicbrainz(data, "nope") is None
 
 
+def test_normalize_station_is_idempotent():
+    # The UI saves and plays stations exactly as the search returned them (tags as a list).
+    raw = {"stationuuid": "u1", "name": "P2", "url_resolved": "http://b", "tags": "jazz,classical",
+           "country": "Sweden", "codec": "AAC", "bitrate": 96}
+    once = normalize_station(raw)
+    assert normalize_station(once) == once
+
+
 def test_split_icy_title():
     assert split_icy_title("Nina Simone - Sinnerman") == ("Nina Simone", "Sinnerman")
     assert split_icy_title("News at ten") == ("", "News at ten")
