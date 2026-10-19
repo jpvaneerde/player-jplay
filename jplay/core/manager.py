@@ -43,6 +43,8 @@ class SourceManager:
     # ------------------------------------------------------------ lifecycle
     async def start(self) -> None:
         self._publisher = asyncio.create_task(self._publish_loop(), name="state-publisher")
+        if self.ctx.output is not None:
+            await self.ctx.output.start()
         self.volume = await self.ctx.volume.get()
         for source in self.sources.values():
             if not source.enabled:
@@ -63,6 +65,8 @@ class SourceManager:
             with contextlib.suppress(Exception):
                 await source.shutdown()
         await self.ctx.engine.shutdown()
+        if self.ctx.output is not None:
+            await self.ctx.output.shutdown()
         if self._publisher:
             self._publisher.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -87,6 +91,11 @@ class SourceManager:
         source = self.get(source_id)
         if not source.available:
             raise SourceError(f"{source.name} is not available: {source.reason}", 409)
+        out = self.ctx.output
+        if out is not None and not out.present:
+            if out.setting == "auto":
+                raise SourceError("No DAC found. Switch the DAC on or plug it in.", 409)
+            raise SourceError(f"The DAC ({out.setting}) isn't connected. Switch it on or plug it in.", 409)
         async with self._switch_lock:
             if self.active_id == source_id:
                 return source
@@ -153,6 +162,7 @@ class SourceManager:
             "capabilities": active.capabilities().to_dict() if active else {},
             "volume": self.volume,
             "volume_available": self.ctx.volume.available,
+            "output": self.ctx.output.info() if self.ctx.output is not None else None,
             "sources": [s.info() for s in self.sources.values()],
         }
 

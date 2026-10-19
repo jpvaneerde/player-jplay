@@ -22,6 +22,7 @@ from .core.context import AppContext
 from .core.events import EventHub
 from .core.manager import SourceManager
 from .core.mpv import MpvEngine
+from .core.output import Output
 from .core.store import StateStore
 from .core.volume import Volume
 from .sources.base import SourceError
@@ -59,8 +60,9 @@ def build_context(config: Config) -> AppContext:
         config=config,
         store=StateStore(state_dir / "state.json"),
         hub=EventHub(),
-        engine=MpvEngine(audio["mpv_binary"], audio["device"], audio.get("mpv_extra_args", []), runtime_dir),
-        volume=Volume(audio.get("mixer_card", ""), audio.get("mixer_control", "")),
+        # The output device and mixer are filled in by Output once the sound cards are known.
+        engine=MpvEngine(audio["mpv_binary"], "null", audio.get("mpv_extra_args", []), runtime_dir),
+        volume=Volume("", ""),
         http=httpx.AsyncClient(headers={"User-Agent": "JPlay/0.1"}, follow_redirects=True),
         state_dir=state_dir,
         runtime_dir=runtime_dir,
@@ -94,6 +96,11 @@ class PlexPlayBody(BaseModel):
 
 class CdPlayBody(BaseModel):
     track: int = 1
+
+
+class OutputBody(BaseModel):
+    device: str = Field(min_length=1, description='"auto", "null" or an ALSA device like "hw:CARD=DAC,DEV=0"')
+    mixer_control: str | None = Field(None, description='Hardware volume control; "" for fixed volume')
 
 
 class DiscoverableBody(BaseModel):
@@ -146,6 +153,17 @@ def api_router() -> APIRouter:
         if not c.volume.available:
             raise SourceError("Volume is fixed (no audio.mixer_control configured)", 409)
         return {"volume": await c.manager.set_volume(body.volume), "available": True}
+
+    # -- output (which DAC)
+    @r.get("/output")
+    async def get_output(request: Request) -> dict[str, Any]:
+        return await ctx(request).output.choices()
+
+    @r.put("/output")
+    async def set_output(request: Request, body: OutputBody) -> dict[str, Any]:
+        c = ctx(request)
+        await c.output.select(body.device, body.mixer_control)
+        return await c.output.choices()
 
     # -- radio
     @r.get("/radio/favourites")
@@ -310,6 +328,7 @@ def create_app(config: Config) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         c = build_context(config)
+        c.output = Output(c)
         sources = [RadioSource(c), PlexSource(c), CdSource(c), SpotifySource(c), BluetoothSource(c)]
         c.manager = SourceManager(c, sources)
         app.state.ctx = c

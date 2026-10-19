@@ -96,11 +96,11 @@ systemctl restart jplay.service
 
 say "Done"
 echo "Open http://$(hostname).local:8080 on your phone."
-if ! aplay -l 2>/dev/null | grep -qi hifiberry; then
+if ! grep -qiE 'hifiberry|USB-Audio' /proc/asound/cards 2>/dev/null; then
   cat <<'EOF'
 
-No HiFiBerry card found. For the DAC2 HD, add these lines to /boot/firmware/config.txt
-and reboot:
+No DAC board or USB DAC found. A USB DAC just needs to be plugged in and switched on.
+For a HiFiBerry DAC2 HD, add these lines to /boot/firmware/config.txt and reboot:
     dtoverlay=hifiberry-dacplushd
     dtparam=audio=off
 EOF

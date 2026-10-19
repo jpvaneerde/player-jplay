@@ -12,14 +12,19 @@ state_dir = "/var/lib/jplay"     # favourites, CD metadata cache, Spotify creden
 runtime_dir = "/run/jplay"       # mpv socket and temporary playlists
 
 [audio]
-# The ALSA device every source plays to. hw: gives bit-perfect output.
-# HiFiBerry DAC2 HD:      hw:CARD=sndrpihifiberry,DEV=0
-# Find yours with:        aplay -L | grep -A1 ^hw:
-# "null" plays silently (for testing on a PC).
-device = "hw:CARD=sndrpihifiberry,DEV=0"
-# Hardware volume through amixer. Leave mixer_control empty for a fixed line-level output
-# (volume on your amplifier). List the controls with: amixer -c sndrpihifiberry scontrols
-mixer_card = "sndrpihifiberry"
+# Which DAC to play to.
+#   "auto"                       a USB DAC if one is switched on, otherwise a DAC HAT
+#                                (HDMI and the headphone jack are never picked automatically)
+#   "hw:CARD=sndrpihifiberry,DEV=0"   HiFiBerry DAC2 HD (and other HiFiBerry boards)
+#   "hw:CARD=DAC,DEV=0"          a USB DAC; the card name comes from the DAC itself
+#   "null"                       silent, for testing on a PC
+# List the names with:  aplay -L | grep ^hw:CARD
+# You can also pick the output on the web page (Output); that choice wins over this line.
+device = "auto"
+# Hardware volume (an amixer control on the DAC). Empty = fixed line-level output, with the
+# volume on your amplifier. List controls with: amixer -c <card name> scontrols
+# mixer_card limits the control to one card; leave it empty to use it on whichever DAC is active.
+mixer_card = ""
 mixer_control = ""
 
 [radio]

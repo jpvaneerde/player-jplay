@@ -24,11 +24,13 @@ DEFAULTS: dict[str, Any] = {
         "runtime_dir": "/run/jplay",
     },
     "audio": {
-        # ALSA device every source plays to. Use the hw: device for bit-perfect output.
-        # "null" plays silently (handy for testing on a PC).
-        "device": "hw:CARD=sndrpihifiberry,DEV=0",
-        # Optional hardware volume (amixer). Leave mixer_control empty for fixed output.
-        "mixer_card": "sndrpihifiberry",
+        # "auto": a USB DAC if one is switched on, otherwise a DAC HAT.
+        # Or an ALSA device such as "hw:CARD=DAC,DEV=0"; "null" plays silently (testing).
+        # Can also be changed from the web page (Output), which overrides this.
+        "device": "auto",
+        # Optional hardware volume (amixer control). Empty = fixed line-level output.
+        # mixer_card limits it to one card; empty = whichever card is in use.
+        "mixer_card": "",
         "mixer_control": "",
         "mpv_binary": "mpv",
         "mpv_extra_args": [],

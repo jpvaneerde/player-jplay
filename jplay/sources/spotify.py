@@ -58,7 +58,7 @@ class SpotifySource(Source):
         self._ticker = asyncio.create_task(self._tick(), name="spotify-position")
 
     def _args(self) -> list[str]:
-        device = self.ctx.config["audio"]["device"]
+        device = self.ctx.output.lossy_device if self.ctx.output else "null"
         args = [
             self.binary,
             "--name", self.device_name,
@@ -146,6 +146,11 @@ class SpotifySource(Source):
             "client": self.client,
             "hint": f"Open Spotify on any device and choose '{self.device_name}' as the speaker.",
         }
+
+    async def output_changed(self) -> None:
+        # librespot opens the device it was started with; restart it on the new DAC.
+        if self.available and not self._closing:
+            await self.restart()
 
     async def deactivate(self) -> None:
         if self.connected or self.np.state != PlayState.STOPPED:

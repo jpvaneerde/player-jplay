@@ -88,6 +88,9 @@ class Source:
     async def deactivate(self) -> None:
         """Another source takes over: stop playback and release the audio device."""
 
+    async def output_changed(self) -> None:
+        """The user picked another DAC (or 'auto' found a new one). Already deactivated."""
+
     # ------------------------------------------------------------ transport
     async def play(self) -> None:
         raise SourceError(f"{self.name} cannot play from here")

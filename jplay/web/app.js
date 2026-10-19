@@ -139,6 +139,7 @@ function statusLine(np) {
   if (x.device) parts.push(x.device);
   if (x.preemphasis) parts.push("Pre-emphasis");
   if (x.error) parts.push(x.error);
+  if (S.output && !S.output.present) parts.push("DAC not connected");
   return parts;
 }
 
@@ -209,10 +210,26 @@ function renderSelector() {
     const s = source(btn.dataset.id);
     btn.classList.toggle("live", isActive(s.id));
     btn.classList.toggle("off", !s.available);
-    btn.setAttribute("aria-selected", String(btn.dataset.id === tab));
+    btn.setAttribute("aria-selected", String(btn.dataset.id === tab));  // false for all on Output
     btn.title = s.available ? (isActive(s.id) ? `${s.name} is playing through the DAC` : s.name) : s.reason;
   }
 }
+
+const KIND = { usb: "USB DAC", hat: "DAC board", hdmi: "HDMI", analog: "Headphone jack" };
+
+function renderLink() {
+  const link = $("link-state");
+  if (!wsOk) { link.textContent = "Reconnecting"; link.className = "link-state down"; return; }
+  const out = S?.output;
+  if (out && !out.present) {
+    link.textContent = out.setting === "auto" ? "No DAC found" : "DAC is off";
+    link.className = "link-state down";
+  } else {
+    link.textContent = out?.name || "Live";
+    link.className = "link-state ok";
+  }
+}
+$("out-btn").onclick = () => openTab("output");
 
 function openTab(id) {
   tab = id;
@@ -220,7 +237,8 @@ function openTab(id) {
   renderSelector();
   const panel = $("panel");
   panel.replaceChildren();
-  panel.setAttribute("aria-labelledby", `tab-${id}`);
+  if (panels[id] !== output) panel.setAttribute("aria-labelledby", `tab-${id}`);
+  else panel.removeAttribute("aria-labelledby");
   const p = panels[id];
   p.sig = null;
   p.mount(panel);
@@ -523,33 +541,84 @@ const bluetooth = {
   },
 };
 
-const panels = { radio, plex, cd, spotify, bluetooth };
+// ------------------------------------------------------------------ output (which DAC)
+const output = {
+  data: null,
+  mount(el) { this.el = el; this.load(); },
+  async load() {
+    try { this.data = await api("GET", "/output"); } catch { return; }
+    this.sig = null;
+    this.draw();
+  },
+  update() {
+    // reload the card list when the output changes (a USB DAC switched on or off)
+    const sig = JSON.stringify(S.output);
+    if (this.seen !== sig) { this.seen = sig; if (this.data) this.load(); }
+  },
+  async choose(device, mixer_control) {
+    try { this.data = await api("PUT", "/output", { device, mixer_control }); } catch { return; }
+    this.draw();
+  },
+  draw() {
+    const d = this.data;
+    const cur = d.current;
+    const option = (value, title, meta, checked) =>
+      h("li", { class: "item tap choice", onclick: () => !checked && this.choose(value) },
+        h("input", { type: "radio", name: "dac", checked, "aria-label": title, tabindex: -1 }),
+        h("div", { class: "body" }, h("div", { class: "name" }, title), h("div", { class: "meta" }, meta)),
+        h("span", { class: "side" }));
+    const cards = d.cards.map((c) => option(c.device, c.name,
+      [KIND[c.kind] || c.kind, c.device, c.formats.length ? c.formats.join(", ") : ""].filter(Boolean).join("  "),
+      cur.setting === c.device));
+    const curCard = d.cards.find((c) => c.device === cur.device);
+    const controls = curCard ? curCard.volume_controls : [];
+    const missingFixed = cur.setting !== "auto" && cur.setting !== "null" && !d.cards.some((c) => c.device === cur.setting);
+    this.el.replaceChildren(...kids(
+      !cur.present ? h("div", { class: "notice warn" }, h("strong", {}, cur.setting === "auto" ? "No DAC found" : "The DAC isn't connected"),
+        cur.setting === "auto" ? "Switch on the USB DAC or check the DAC board, then press play. It is picked up within a few seconds." : `Switch on or plug in ${cur.name}, then press play. Or pick another output below.`) : null,
+      h("h2", {}, "Play through"),
+      h("ul", { class: "list" },
+        option("auto", "Automatic", d.auto_choice ? `${cur.setting === "auto" ? "Now using" : "Would use"} ${d.auto_choice}` : "No USB DAC or DAC board found", cur.setting === "auto"),
+        ...cards,
+        missingFixed ? option(cur.setting, cur.name, "Switched off or unplugged", true) : null),
+      h("p", { class: "hint" }, "Automatic uses a USB DAC while it is switched on, otherwise the DAC board; never HDMI or the headphone jack. CD and Plex play bit-perfect. Spotify and Bluetooth are converted to a format the DAC accepts when needed."),
+      h("h2", {}, "Volume"),
+      controls.length
+        ? h("select", { class: "select", "aria-label": "Volume control", onchange: (e) => this.choose(cur.setting, e.target.value) },
+            h("option", { value: "", selected: !cur.mixer_control }, "Fixed, use the amplifier's volume"),
+            ...controls.map((c) => h("option", { value: c, selected: cur.mixer_control === c }, `DAC control: ${c}`)))
+        : h("p", { class: "hint" }, curCard ? `${curCard.name} has no volume control, so the output is fixed. Use the amplifier's volume.` : "Volume settings appear when the DAC is connected."),
+    ));
+  },
+};
+
+const panels = { radio, plex, cd, spotify, bluetooth, output };
 
 // ------------------------------------------------------------------ live connection
 function applyState(snapshot) {
   const first = !S;
   S = snapshot;
-  if (first || !tab || !source(tab)) {
-    tab = tab && source(tab) ? tab : S.active || S.sources.find((s) => s.available)?.id || S.sources[0].id;
+  if (first || !tab || (!source(tab) && tab !== "output")) {
+    tab = tab && (source(tab) || tab === "output") ? tab : S.active || S.sources.find((s) => s.available)?.id || S.sources[0].id;
   }
   renderDeck();
   renderSelector();
+  renderLink();
   if (first || !$("panel").firstChild) openTab(tab);
   else panels[tab].update();
 }
 
-let ws, retry = 0;
+let ws, retry = 0, wsOk = false;
 function connect() {
-  const link = $("link-state");
   ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api/v1/events`);
-  ws.onopen = () => { retry = 0; link.textContent = "Live"; link.className = "link-state ok"; };
+  ws.onopen = () => { retry = 0; wsOk = true; renderLink(); };
   ws.onmessage = (e) => {
     const msg = JSON.parse(e.data);
     if (msg.type === "state") applyState(msg.data);
   };
   ws.onclose = () => {
-    link.textContent = "Reconnecting";
-    link.className = "link-state down";
+    wsOk = false;
+    renderLink();
     setTimeout(connect, Math.min(10000, 1000 * 2 ** retry++));
   };
 }

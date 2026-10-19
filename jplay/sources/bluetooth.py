@@ -228,7 +228,7 @@ class BluetoothSource(Source):
     async def _start_aplay(self) -> None:
         if self._aplay and self._aplay.returncode is None:
             return
-        device = self.ctx.config["audio"]["device"]
+        device = self.ctx.output.lossy_device if self.ctx.output else "null"
         log.info("Starting bluealsa-aplay -> %s", device)
         self._aplay = await asyncio.create_subprocess_exec(
             self.aplay_binary, "--profile-a2dp", f"--pcm={device}",

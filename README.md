@@ -31,7 +31,18 @@ When you switch sources, the old one stops and releases the ALSA device first, t
 
 ## Hardware
 
-Built and tested for a Raspberry Pi 4 (2 GB or more), a HiFiBerry DAC2 HD and a USB CD drive (with its own power supply or a powered hub). Any ALSA DAC works; set its device in the config.
+Built for a Raspberry Pi 4 (2 GB or more) and a USB CD drive (with its own power supply or a powered hub), playing through either:
+
+- a **DAC board** on the Pi (HAT), such as the HiFiBerry DAC2 HD, or
+- a **USB DAC**.
+
+### Choosing the DAC
+
+Out of the box the output is `auto`: a USB DAC while one is switched on, otherwise the DAC board. HDMI and the Pi's headphone jack are never picked automatically, so a USB DAC that is switched off doesn't send the music to the TV. You can also pick a fixed output on the web page (tap the DAC name at the top right), or set `audio.device` in the config.
+
+- A USB DAC that is switched off disappears from the Pi. JPlay notices within a few seconds, stops what was playing and shows "DAC is off". Switch it on and press play.
+- CD and Plex play bit-perfect (`hw:` device). Spotify and Bluetooth go through ALSA's `plughw:`, so a USB DAC that only accepts 24- or 32-bit still works; their audio is already lossy.
+- Hardware volume: if the DAC has a volume control, pick it under Output > Volume. Otherwise the output is fixed and you use the amplifier's volume.
 
 ## Install on the Pi
 
@@ -45,7 +56,7 @@ sudo bash /opt/player-jplay/deploy/install.sh
 
 The installer adds mpv, cd-paranoia, librespot (from the Raspotify package), BlueZ and BlueALSA, creates a `jplay` system user, sets up a virtualenv and starts the `jplay` service. Skip parts with `SKIP_SPOTIFY=1` or `SKIP_BLUETOOTH=1`.
 
-For the DAC2 HD, add this to `/boot/firmware/config.txt` and reboot:
+For a DAC board such as the DAC2 HD, add this to `/boot/firmware/config.txt` and reboot (a USB DAC needs nothing):
 
 ```
 dtoverlay=hifiberry-dacplushd
@@ -82,6 +93,8 @@ Everything the web page does goes through the API. Interactive docs are at `/api
 | POST | `/api/v1/player/seek` | `{"position": 83.5}` |
 | GET / PUT | `/api/v1/volume` | `{"volume": 0-100}` (needs `audio.mixer_control`) |
 | POST | `/api/v1/sources/{id}/activate` | Make a source active |
+| GET | `/api/v1/output` | Sound cards found, which one is used, volume controls per card |
+| PUT | `/api/v1/output` | `{"device": "auto"}` or `{"device": "hw:CARD=DAC,DEV=0", "mixer_control": ""}` |
 | GET | `/api/v1/radio/favourites` | Favourite stations; POST adds, DELETE `/{uuid}` removes |
 | GET | `/api/v1/radio/search?name=&country=&tag=` | Search Radio Browser |
 | POST | `/api/v1/radio/play` | `{"uuid": "..."}` (a favourite) or `{"station": {...}}` |
@@ -140,6 +153,8 @@ python -m tests.fake_plex --port 32400 --audio-dir /some/folder/with/wav/files
 
 then a config with `[plex] url = "http://127.0.0.1:32400"`, `token = "x"` and `[audio] device = "null"`, and run `python -m jplay --config that.toml --debug`.
 
+To try the Output page without sound cards, point `JPLAY_ASOUND_PROC` at a copy of a Pi's `/proc/asound` (`tests/test_output.py` shows the layout).
+
 ## Known limits
 
 - **Spotify** can only be controlled from the Spotify app; librespot has no remote-control interface. JPlay shows what is playing and can end the session.
@@ -153,7 +168,8 @@ then a config with `[plex] url = "http://127.0.0.1:32400"`, `token = "x"` and `[
 jplay/
   app.py              FastAPI app and routes
   config.py           TOML config with defaults
-  core/               manager, mpv engine, models, events, state store, volume, play log
+  core/               manager, mpv engine, output (DAC choice), ALSA card detection,
+                      models, events, state store, volume, play log
   sources/            radio, plex, cd, spotify, bluetooth
   hooks/              librespot event hook
   web/                the web interface (no build step)

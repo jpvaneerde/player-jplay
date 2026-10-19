@@ -15,6 +15,7 @@ from .volume import Volume
 
 if TYPE_CHECKING:
     from .manager import SourceManager
+    from .output import Output
 
 
 @dataclass
@@ -28,4 +29,5 @@ class AppContext:
     state_dir: Path
     runtime_dir: Path
     manager: "SourceManager" = None  # type: ignore[assignment]  # set right after creation
+    output: "Output" = None  # type: ignore[assignment]  # set right after creation
     hook_token: str = ""  # shared secret for local hooks (librespot events)
