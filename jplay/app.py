@@ -17,7 +17,9 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from . import __version__
 from .config import Config
+from .core.announce import Announcer
 from .core.context import AppContext
 from .core.events import EventHub
 from .core.manager import SourceManager
@@ -124,6 +126,23 @@ def api_router() -> APIRouter:
 
     @r.get("/status")
     async def status(request: Request) -> dict[str, Any]:
+        return ctx(request).manager.snapshot()
+
+    @r.get("/info")
+    async def info(request: Request) -> dict[str, Any]:
+        """Who this player is: a stable id (for Home Assistant), its name and version."""
+        c = ctx(request)
+        return {
+            "id": player_id(c),
+            "name": c.config["server"]["name"],
+            "version": __version__,
+            "sources": [{"id": s.id, "name": s.name} for s in c.manager.sources.values()],
+        }
+
+    @r.post("/standby")
+    async def standby(request: Request) -> dict[str, Any]:
+        """Stop whatever plays and go idle (no source)."""
+        await ctx(request).manager.deactivate_all()
         return ctx(request).manager.snapshot()
 
     @r.post("/sources/{source_id}/activate")
@@ -345,6 +364,15 @@ def api_router() -> APIRouter:
     return r
 
 
+def player_id(c: AppContext) -> str:
+    """A random id made once and kept in the state file, so renaming the player keeps its identity."""
+    pid = c.store.get("player_id")
+    if not pid:
+        pid = secrets.token_hex(8)
+        c.store.set("player_id", pid)
+    return pid
+
+
 def create_app(config: Config) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -354,10 +382,14 @@ def create_app(config: Config) -> FastAPI:
         c.manager = SourceManager(c, sources)
         app.state.ctx = c
         await c.manager.start()
+        announcer = Announcer(config["server"]["name"], int(config["server"]["port"]),
+                              {"id": player_id(c), "version": __version__, "path": "/api/v1"})
+        await announcer.start()
         log.info("JPlay ready on port %s (state in %s)", config["server"]["port"], c.state_dir)
         try:
             yield
         finally:
+            await announcer.shutdown()
             await c.manager.shutdown()
             with contextlib.suppress(Exception):
                 await c.http.aclose()

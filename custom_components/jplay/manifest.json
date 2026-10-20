@@ -1,0 +1,13 @@
+{
+  "domain": "jplay",
+  "name": "JPlay",
+  "codeowners": ["@jpvaneerde"],
+  "config_flow": true,
+  "documentation": "https://github.com/jpvaneerde/player-jplay/tree/main/custom_components/jplay",
+  "integration_type": "device",
+  "iot_class": "local_push",
+  "issue_tracker": "https://github.com/jpvaneerde/player-jplay/issues",
+  "requirements": [],
+  "version": "1.0.0",
+  "zeroconf": ["_jplay._tcp.local."]
+}

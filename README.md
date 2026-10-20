@@ -88,6 +88,8 @@ Everything the web page does goes through the API. Interactive docs are at `/api
 | Method | Path | What it does |
 | --- | --- | --- |
 | GET | `/api/v1/status` | Active source, now playing, capabilities, volume, all sources |
+| GET | `/api/v1/info` | The player's id (made once, kept when renamed), name and version |
+| POST | `/api/v1/standby` | Stop and go idle: no source active |
 | WS | `/api/v1/events` | Pushes the same snapshot on every change (position at most once a second) |
 | POST | `/api/v1/player/{play,pause,toggle,stop,next,previous}` | Transport for the active source |
 | POST | `/api/v1/player/seek` | `{"position": 83.5}` |
@@ -130,6 +132,14 @@ Set `webhook.url` and every track that plays at least `min_seconds` is POSTed as
 {"player": "JPlay", "source": "cd", "title": "So What", "artist": "Miles Davis",
  "album": "Kind of Blue", "duration": 545.0, "started_at": 1792400000.0, "played_seconds": 30}
 ```
+
+### Home Assistant
+
+`custom_components/jplay` is a Home Assistant integration for the players and the JPlaying Now displays: a media
+player per player (source, volume, the radio favourites, CD and Plex in the media browser), sensors, the DAC choice,
+and a JPlaying Now's screen. Players announce themselves on the network as `_jplay._tcp` (through Avahi, which
+Raspberry Pi OS runs), so Home Assistant finds them by itself. Installing it, and Google Home:
+[custom_components/jplay/README.md](custom_components/jplay/README.md).
 
 ### JPlaying Now
 
@@ -178,4 +188,6 @@ jplay/
   web/                the web interface (no build step)
 deploy/               installer and systemd units
 tests/                unit tests, Plex integration test, fake Plex server
+custom_components/jplay/   the Home Assistant integration
+tests_homeassistant/  its tests (in a real Home Assistant; own environment)
 ```
