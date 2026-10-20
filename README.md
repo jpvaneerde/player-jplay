@@ -134,6 +134,9 @@ Set `webhook.url` and every track that plays at least `min_seconds` is POSTed as
 ### JPlaying Now
 
 A display can read `GET /api/v1/status`, or better, keep a WebSocket open on `/api/v1/events` and redraw on each message.
+`active` is the source playing (`radio`, `plex`, `cd`, `spotify`, `bluetooth`). For radio, `now_playing.extra` has
+`station` and `stream_url`; when the station sends no song, `title` is the station name and `artist` is empty, and
+JPlaying Now listens to the stream to recognise the song itself.
 
 ## Development
 

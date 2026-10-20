@@ -140,6 +140,8 @@ class RadioSource(EngineSource):
             extra={
                 "station": station["name"],
                 "station_uuid": station["uuid"],
+                # The stream itself: lets a display (JPlaying Now) recognise songs the station doesn't name.
+                "stream_url": station["url"],
                 "codec": station.get("codec", ""),
                 "bitrate": station.get("bitrate", 0),
             },
