@@ -169,6 +169,9 @@ class SpotifySource(Source):
             self.ctx.manager.notify(True)
         elif kind in ("session_disconnected", "stop"):
             self._session_ended()
+            # The phone let go: the player is idle again (librespot keeps running for the next one).
+            if self.active:
+                await self.ctx.manager.release(self.id)
         elif kind == "track_changed":
             covers = [c for c in (ev.get("COVERS") or "").splitlines() if c.strip()]
             artists = [a for a in (ev.get("ARTISTS") or "").splitlines() if a.strip()]

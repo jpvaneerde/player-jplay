@@ -168,6 +168,9 @@ class BluetoothSource(Source):
                 if "org.bluez.MediaTransport1" in ifaces:
                     self.transports.pop(path, None)
                     self._transport_changed(path)
+                    if not self.transports and self.active:
+                        # The phone disconnected: stop the audio path, the player is idle again.
+                        asyncio.get_running_loop().create_task(self._phone_left())
                 if "org.bluez.MediaPlayer1" in ifaces:
                     self.players.pop(path, None)
                 self.ctx.manager.notify(True)
@@ -205,6 +208,11 @@ class BluetoothSource(Source):
         elif status == "paused":
             fields["state"] = PlayState.PAUSED
         self.update(**fields)
+
+    async def _phone_left(self) -> None:
+        await self._stop_aplay()
+        self.reset_now_playing()
+        await self.ctx.manager.release(self.id)
 
     async def _claim(self) -> None:
         if not self.active:

@@ -115,3 +115,15 @@ async def test_spotify_events_claim_the_dac(setup):
     assert (np.title, np.artist, np.duration, np.position) == ("So What", "Miles Davis, John Coltrane", 545.0, 12.0)
     assert np.state.value == "playing" and np.art_url.endswith("/a")
     assert spotify.details()["client"] == "JP's phone"
+
+
+async def test_release_leaves_the_player_idle(setup):
+    # A phone that disconnects (Spotify, Bluetooth): the source is no longer active, without being stopped again.
+    ctx, log = setup
+    await ctx.manager.activate("a")
+    await ctx.manager.release("b")          # not the active one: nothing happens
+    assert ctx.manager.active_id == "a"
+    await ctx.manager.release("a")
+    assert ctx.manager.active_id is None
+    assert ctx.manager.snapshot()["active"] is None
+    assert log == ["activate a"]

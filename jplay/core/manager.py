@@ -117,6 +117,18 @@ class SourceManager:
         self.notify(True)
         return source
 
+    async def release(self, source_id: str) -> None:
+        """A source that ended by itself (the phone left Spotify or Bluetooth): nothing is active any more.
+
+        Unlike deactivate_all this doesn't stop the source; it already stopped.
+        """
+        async with self._switch_lock:
+            if self.active_id != source_id:
+                return
+            log.info("%s ended; nothing active", source_id)
+            self.active_id = None
+        self.notify(True)
+
     async def deactivate_all(self) -> None:
         async with self._switch_lock:
             if self.active is not None:
