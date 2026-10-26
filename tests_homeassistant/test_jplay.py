@@ -1,6 +1,7 @@
 """The JPlay integration against a fake JPlay player and a fake JPlaying Now, in a real Home Assistant."""
 import asyncio
 import copy
+import time
 
 import pytest
 from aiohttp import web
@@ -45,8 +46,31 @@ OUTPUT = {"current": {"setting": "auto", "name": "Audiolab", "present": True}, "
                     {"name": "HiFiBerry", "kind": "hat", "device": "hw:CARD=sndrpihifiberry,DEV=0"}]}
 
 
+def fake_update_status(version="1.0.0", latest="1.1.0"):
+    return {"supported": True, "version": version, "latest": latest, "available": latest != version,
+            "target": f"v{latest}" if latest != version else None, "notes": f"## {latest}\nLyrics in JPlay Records\nJapanese titles",
+            "state": "idle", "step": "checked", "message": "", "in_progress": False, "finished_at": None, "channel": "releases"}
+
+
+async def simulate_update(st: dict, ok: bool = True):
+    """What the Pi's updater does: progress through its steps, then done (or rolled back)."""
+    st.update(state="updating", step="starting", in_progress=True)
+    for step in ("fetching", "applying", "restarting", "verifying"):
+        await asyncio.sleep(0.3)
+        st["step"] = step
+    await asyncio.sleep(0.3)
+    if ok:
+        st.update(state="done", step="done", in_progress=False, version=st["latest"], available=False, target=None,
+                  message=f"Updated to {st['latest']}", finished_at=time.time())
+    else:
+        st.update(state="rolled_back", step="rolled_back", in_progress=False, finished_at=time.time(),
+                  message="Update failed (JPlay didn't start); back on 1.0.0")
+
+
 class FakePlayer:
-    def __init__(self):
+    def __init__(self, with_updates=True):
+        self.update = fake_update_status() if with_updates else None
+        self.update_ok = True
         self.status = copy.deepcopy(STATUS)
         self.calls = []
         self.sockets = []
@@ -59,10 +83,21 @@ class FakePlayer:
         app.router.add_get("/api/v1/plex/playlists", lambda r: web.json_response(
             [{"key": "77", "title": "Friday", "thumb": "/api/v1/plex/art?path=x"}]))
         app.router.add_get("/api/v1/events", self.ws)
+        if with_updates:
+            app.router.add_get("/api/v1/update", lambda r: web.json_response(self.update))
+            app.router.add_post("/api/v1/update/install", self.install)
         app.router.add_route("*", "/api/v1/{tail:.*}", self.record)
         self.app = app
 
+    async def install(self, request):
+        body = await request.json()
+        self.calls.append(("POST", "/api/v1/update/install", body))
+        asyncio.get_running_loop().create_task(simulate_update(self.update, self.update_ok))
+        return web.json_response({"ok": True, "target": body.get("target")})
+
     async def record(self, request):
+        if request.method == "GET":
+            return web.json_response({"detail": "Not Found"}, status=404)   # like a real player
         body = await request.json() if request.can_read_body else None
         self.calls.append((request.method, request.path, body))
         if request.path == "/api/v1/standby":
@@ -98,6 +133,8 @@ class FakeNow:
         app.router.add_get("/api/screen", lambda r: web.json_response({"on": self.screen}))
         app.router.add_post("/api/screen", self.set_screen)
         app.router.add_post("/api/view", self.set_view)
+        self.update = fake_update_status("2.0.0", "2.0.0")
+        app.router.add_get("/api/update", lambda r: web.json_response(self.update))
         self.app = app
 
     async def dashboard(self, request):
@@ -273,7 +310,76 @@ async def test_jplayingnow(hass: HomeAssistant, socket_enabled):
         assert hass.states.get("select.lounge_display_shown_player").state == "Study"
         entry = hass.config_entries.async_entries(DOMAIN)[0]
         assert "config" not in entry.runtime_data.coordinator.data["dashboard"]
+        u = hass.states.get("update.lounge_display")
+        assert u.state == "off" and u.attributes["installed_version"] == "2.0.0" and u.attributes["title"] == "JPlaying Now"
         assert await hass.config_entries.async_unload(entry.entry_id)
     finally:
         await runner.cleanup()
 
+
+
+async def test_updates(hass: HomeAssistant, socket_enabled):
+    fake = FakePlayer()
+    runner, port = await serve(fake.app)
+    try:
+        r = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_USER})
+        r = await hass.config_entries.flow.async_configure(r["flow_id"], {"next_step_id": "player"})
+        r = await hass.config_entries.flow.async_configure(r["flow_id"], {"host": "127.0.0.1", "port": port})
+        await hass.async_block_till_done()
+        u = hass.states.get("update.lounge")
+        assert u.state == "on", u
+        assert u.attributes["installed_version"] == "1.0.0" and u.attributes["latest_version"] == "1.1.0"
+        assert u.attributes["title"] == "JPlay"
+        assert u.attributes["release_summary"] == "Lyrics in JPlay Records · Japanese titles"
+        ent = hass.data["update"].get_entity("update.lounge")
+        assert "Japanese titles" in await ent.async_release_notes()
+
+        # Install from Home Assistant: the Pi's updater runs, progress shows, then up to date
+        task = hass.async_create_task(hass.services.async_call("update", "install", {"entity_id": "update.lounge"}, blocking=True))
+        seen = set()
+        for _ in range(60):
+            await asyncio.sleep(0.1)
+            await ent.coordinator.async_refresh()
+            st = hass.states.get("update.lounge")
+            if st.attributes.get("in_progress"):
+                seen.add(st.attributes.get("update_percentage"))
+            if task.done():
+                break
+        await task
+        assert ("POST", "/api/v1/update/install", {"target": "v1.1.0"}) in fake.calls
+        assert seen - {None}, seen                          # progress was shown
+        u = hass.states.get("update.lounge")
+        assert u.state == "off" and u.attributes["installed_version"] == "1.1.0", u
+
+        # A failed update (rolled back by the Pi) is reported as an error
+        fake.update.update(fake_update_status("1.1.0", "1.2.0"))
+        fake.update_ok = False
+        await ent.coordinator.async_refresh(); await hass.async_block_till_done()
+        assert hass.states.get("update.lounge").state == "on"
+        with pytest.raises(Exception, match="back on 1.0.0"):
+            await hass.services.async_call("update", "install", {"entity_id": "update.lounge"}, blocking=True)
+
+        # Without the updater set up on the Pi: shown, but no Install
+        fake.update.update(fake_update_status("1.1.0", "1.2.0"), supported=False)
+        await ent.coordinator.async_refresh(); await hass.async_block_till_done()
+        assert not hass.states.get("update.lounge").attributes["supported_features"] & 1
+        for e in hass.config_entries.async_entries(DOMAIN):
+            await hass.config_entries.async_unload(e.entry_id)
+    finally:
+        await runner.cleanup()
+
+
+async def test_player_without_update_api(hass: HomeAssistant, socket_enabled):
+    fake = FakePlayer(with_updates=False)
+    runner, port = await serve(fake.app)
+    try:
+        r = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_USER})
+        r = await hass.config_entries.flow.async_configure(r["flow_id"], {"next_step_id": "player"})
+        r = await hass.config_entries.flow.async_configure(r["flow_id"], {"host": "127.0.0.1", "port": port})
+        await hass.async_block_till_done()
+        assert hass.states.get("media_player.lounge").state == "playing"     # everything else still works
+        assert hass.states.get("update.lounge").state == "unavailable"
+        for e in hass.config_entries.async_entries(DOMAIN):
+            await hass.config_entries.async_unload(e.entry_id)
+    finally:
+        await runner.cleanup()

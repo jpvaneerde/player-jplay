@@ -328,3 +328,17 @@ html.light .item.now .name, html.light .item.now .num { color: var(--accent-deep
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
 }
+
+/* Version & updates (on the Output page) */
+.updates { margin-top: 28px; display: grid; gap: 10px; }
+.upd-line { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.upd-version { font-size: 1.25rem; font-weight: 800; }
+.upd-badge { font-size: .8rem; font-weight: 700; padding: 3px 10px; border-radius: 999px; background: var(--card); border: 1px solid var(--line); color: var(--muted); }
+.upd-badge.new { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 50%, transparent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.upd-badge.bad { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 50%, transparent); background: color-mix(in srgb, var(--danger) 12%, transparent); }
+.upd-notes, .upd-log { white-space: pre-wrap; margin: 0; padding: 12px; border-radius: 10px; background: var(--bg-2); border: 1px solid var(--line); font: inherit; font-size: .88rem; color: var(--muted); max-height: 240px; overflow: auto; }
+.upd-log { font-family: ui-monospace, monospace; font-size: .75rem; }
+.upd-buttons { display: flex; gap: 10px; flex-wrap: wrap; }
+.upd-setting { display: flex; align-items: center; gap: 10px; color: var(--muted); flex-wrap: wrap; }
+.upd-setting.check { flex-wrap: nowrap; align-items: flex-start; }
+.upd-setting.check input { flex: none; width: 18px; height: 18px; margin: 2px 0 0; accent-color: var(--accent); }

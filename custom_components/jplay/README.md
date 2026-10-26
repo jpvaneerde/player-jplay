@@ -35,6 +35,7 @@ Update the players and JPlaying Now first (`sudo git pull`, restart). Older vers
 | Playing, DAC, CD inserted, Bluetooth connected | On/off sensors. |
 | Bluetooth pairing | Makes the player visible to phones for a few minutes. |
 | Eject CD, Standby | Buttons. |
+| Update | The player's version and the newest release (Settings → Updates), with release notes and Install. |
 
 Changes arrive at once (the player pushes them); while a song plays, the position isn't written to the history
 every second.
@@ -47,6 +48,12 @@ every second.
 | Shown player | Which player the display shows. |
 | Showing | What's on the screen: the player's song or station, or what the microphone hears. |
 | Heard | The song the microphone last recognised (records, CDs). |
+| Update | The display's version and the newest release, with release notes and Install. |
+
+**Updates:** each player and display has an update entity. Settings → Updates lists the ones with a new release;
+Install asks the device's own updater, which restarts the app and goes back to the previous version if it doesn't
+start (an error then says so). Updates started on the device itself show their progress here too. Install appears
+once the updater is set up on the device (see the player's and JPlaying Now's README, "Updates").
 
 ## Playing something from automations
 

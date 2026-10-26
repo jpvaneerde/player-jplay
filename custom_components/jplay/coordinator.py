@@ -52,14 +52,16 @@ class PlayerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             status = await self.api.get("/api/v1/status")
         except JPlayError as err:
             raise UpdateFailed(str(err)) from err
-        favourites, output = await asyncio.gather(
-            self.api.get("/api/v1/radio/favourites"), self.api.get("/api/v1/output"), return_exceptions=True
+        favourites, output, update = await asyncio.gather(
+            self.api.get("/api/v1/radio/favourites"), self.api.get("/api/v1/output"), self.api.get("/api/v1/update"),
+            return_exceptions=True,
         )
         self._note_position(status)
         return {
             "status": status,
             "favourites": favourites if isinstance(favourites, list) else (self.data or {}).get("favourites", []),
             "output": output if isinstance(output, dict) else (self.data or {}).get("output"),
+            "update": update if isinstance(update, dict) else None,   # None: a player without the update API
         }
 
     # ---------------------------------------------------------------- live updates
@@ -133,5 +135,9 @@ class NowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             dashboard, screen_status = await asyncio.gather(self.api.get("/api/dashboard"), self.api.get("/api/screen-status"))
         except JPlayError as err:
             raise UpdateFailed(str(err)) from err
+        try:
+            update = await self.api.get("/api/update")
+        except JPlayError:
+            update = None                  # a display without the update API
         dashboard.pop("config", None)  # settings (and their tokens) aren't needed here
-        return {"dashboard": dashboard, "screen": dashboard.get("screen"), "screen_status": screen_status}
+        return {"dashboard": dashboard, "screen": dashboard.get("screen"), "screen_status": screen_status, "update": update}

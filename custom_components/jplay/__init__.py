@@ -19,8 +19,8 @@ from .coordinator import NowCoordinator, PlayerCoordinator
 
 PLATFORMS: dict[str, list[Platform]] = {
     KIND_PLAYER: [Platform.MEDIA_PLAYER, Platform.SELECT, Platform.SENSOR, Platform.BINARY_SENSOR,
-                  Platform.BUTTON, Platform.SWITCH],
-    KIND_NOW: [Platform.SWITCH, Platform.SELECT, Platform.SENSOR],
+                  Platform.BUTTON, Platform.SWITCH, Platform.UPDATE],
+    KIND_NOW: [Platform.SWITCH, Platform.SELECT, Platform.SENSOR, Platform.UPDATE],
 }
 
 

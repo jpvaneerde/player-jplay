@@ -94,6 +94,10 @@ systemctl daemon-reload
 systemctl enable jplay.service
 systemctl restart jplay.service
 
+say "Updates"
+# The separate updater: checks GitHub a few times a day; the web page (Output) shows the version and updates.
+bash "$REPO/deploy/install-updater.sh"
+
 say "Done"
 echo "Open http://$(hostname).local:8080 on your phone."
 if ! grep -qiE 'hifiberry|USB-Audio' /proc/asound/cards 2>/dev/null; then

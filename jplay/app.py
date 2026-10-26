@@ -26,6 +26,7 @@ from .core.manager import SourceManager
 from .core.mpv import MpvEngine
 from .core.output import Output
 from .core.store import StateStore
+from .core.updates import Updates, UpdateError
 from .core.volume import Volume
 from .sources.base import SourceError
 from .sources.bluetooth import BluetoothSource
@@ -36,6 +37,7 @@ from .sources.spotify import SpotifySource
 
 log = logging.getLogger(__name__)
 WEB_DIR = Path(__file__).parent / "web"
+REPO_DIR = Path(__file__).resolve().parent.parent   # the git checkout (/opt/player-jplay)
 
 
 def _usable_dir(preferred: str, fallback: Path) -> Path:
@@ -109,6 +111,15 @@ class DiscoverableBody(BaseModel):
     on: bool = True
 
 
+class UpdateInstallBody(BaseModel):
+    target: str | None = None
+
+
+class UpdateSettingsBody(BaseModel):
+    channel: str | None = Field(None, pattern="^(releases|main)$")
+    auto: str | None = Field(None, pattern="^(off|night)$")
+
+
 # ---------------------------------------------------------------- routes
 def api_router() -> APIRouter:
     r = APIRouter(prefix="/api/v1")
@@ -135,7 +146,7 @@ def api_router() -> APIRouter:
         return {
             "id": player_id(c),
             "name": c.config["server"]["name"],
-            "version": __version__,
+            "version": app_version(request.app),
             "sources": [{"id": s.id, "name": s.name} for s in c.manager.sources.values()],
         }
 
@@ -345,6 +356,50 @@ def api_router() -> APIRouter:
         await src(request, "bluetooth").forget(address)
         return {"ok": True}
 
+    # -- version and updates (the separate updater does the work: deploy/update.sh)
+    def update_settings(request: Request) -> dict[str, str]:
+        st = ctx(request).store.get("updates", {}) or {}
+        return {"channel": st.get("channel", "releases"), "auto": st.get("auto", "off")}
+
+    def update_status(request: Request) -> dict[str, Any]:
+        settings = update_settings(request)
+        return {**request.app.state.updates.status(settings["channel"]), "auto": settings["auto"]}
+
+    @r.get("/update")
+    async def get_update(request: Request) -> dict[str, Any]:
+        """Version, the newest release and its notes, and how an update is going."""
+        return await asyncio.to_thread(update_status, request)
+
+    @r.post("/update/check")
+    async def update_check(request: Request) -> dict[str, Any]:
+        try:
+            await asyncio.to_thread(request.app.state.updates.check)
+        except UpdateError as exc:
+            raise SourceError(str(exc), 409) from exc
+        return {"ok": True}
+
+    @r.post("/update/install")
+    async def update_install(request: Request, body: UpdateInstallBody | None = None) -> dict[str, Any]:
+        """Update to the newest version (or a given "v1.6.0"). The updater restarts the player when done."""
+        st = await asyncio.to_thread(update_status, request)
+        target = (body.target if body else None) or st["target"]
+        if not target:
+            raise SourceError("Already up to date", 409)
+        try:
+            await asyncio.to_thread(request.app.state.updates.install, target)
+        except UpdateError as exc:
+            raise SourceError(str(exc), 409) from exc
+        return {"ok": True, "target": target}
+
+    @r.put("/update/settings")
+    async def put_update_settings(request: Request, body: UpdateSettingsBody) -> dict[str, Any]:
+        """Where updates come from (releases | main) and whether they install at night (off | night)."""
+        c = ctx(request)
+        st = update_settings(request)
+        st.update({k: v for k, v in body.model_dump().items() if v is not None})
+        c.store.set("updates", st)
+        return await asyncio.to_thread(update_status, request)
+
     # -- live events
     @r.websocket("/events")
     async def events(ws: WebSocket) -> None:
@@ -364,6 +419,29 @@ def api_router() -> APIRouter:
     return r
 
 
+def app_version(app: FastAPI) -> str:
+    """'1.6.0' from the git tags; the package version when git can't tell (a copy without .git)."""
+    v = app.state.updates.version()["version"]
+    return __version__ if v in ("unknown", "") else v
+
+
+async def auto_update(app: FastAPI) -> None:
+    """Every minute: install a waiting update at night when that's switched on and nothing plays."""
+    c: AppContext = app.state.ctx
+    while True:
+        await asyncio.sleep(60)
+        try:
+            st = c.store.get("updates", {}) or {}
+            busy = c.manager.active_id is not None   # a source is active (playing, paused or waiting for a phone)
+            target = await asyncio.to_thread(app.state.updates.auto_target, st.get("auto", "off"),
+                                             st.get("channel", "releases"), busy)
+            if target:
+                log.info("Installing %s automatically", target)
+                await asyncio.to_thread(app.state.updates.install, target)
+        except Exception as exc:
+            log.warning("Automatic update: %s", exc)
+
+
 def player_id(c: AppContext) -> str:
     """A random id made once and kept in the state file, so renaming the player keeps its identity."""
     pid = c.store.get("player_id")
@@ -381,14 +459,17 @@ def create_app(config: Config) -> FastAPI:
         sources = [RadioSource(c), PlexSource(c), CdSource(c), SpotifySource(c), BluetoothSource(c)]
         c.manager = SourceManager(c, sources)
         app.state.ctx = c
+        app.state.updates = Updates("jplay", str(REPO_DIR), str(c.state_dir))
         await c.manager.start()
         announcer = Announcer(config["server"]["name"], int(config["server"]["port"]),
-                              {"id": player_id(c), "version": __version__, "path": "/api/v1"})
+                              {"id": player_id(c), "version": app_version(app), "path": "/api/v1"})
         await announcer.start()
+        updater = asyncio.create_task(auto_update(app), name="auto-update")
         log.info("JPlay ready on port %s (state in %s)", config["server"]["port"], c.state_dir)
         try:
             yield
         finally:
+            updater.cancel()
             await announcer.shutdown()
             await c.manager.shutdown()
             with contextlib.suppress(Exception):

@@ -73,9 +73,31 @@ token = "your-X-Plex-Token"
 
 and restart: `sudo systemctl restart jplay`. Open `http://<pi-name>.local:8080`.
 
-**Update** after a `git pull`: `sudo systemctl restart jplay` (re-run the installer if `pyproject.toml` changed).
-
 **Logs**: `journalctl -u jplay -f`
+
+## Updates
+
+The web page shows the version under **Output → Version & updates** (from the git tags: `1.6.0`, or `1.6.0+3` for 3
+commits after it), whether a newer release is on GitHub with its notes, and **Update to …**. Options: updates from
+**Releases** or the **newest commit** (for development), and **install automatically at night** (03:00–05:00, only
+when no source is active). Home Assistant shows the same under **Settings → Updates** (the JPlay integration).
+
+The installer sets up the separate updater. On a player installed earlier, once:
+
+```bash
+cd /opt/player-jplay && sudo git pull && sudo bash deploy/install-updater.sh
+```
+
+The player never updates itself: it asks `jplay-update.service` ([deploy/update.sh](deploy/update.sh), settings in
+[deploy/updater.conf](deploy/updater.conf)), which fetches from GitHub, moves `main` forward to the release
+(fast-forward only; it refuses rather than overwrite changes made on the Pi), reinstalls the Python packages when
+`pyproject.toml` changed, restarts the player and waits until it answers, and otherwise goes back to the previous
+version. A check runs every 6 hours (`jplay-update-check.timer`); a sudoers rule lets the `jplay` user start exactly
+these two services. `/etc/jplay/config.toml` and the state in `/var/lib/jplay` are never touched.
+
+**Releasing** (on the PC, after committing): `.\tools\release.ps1` asks for the version and notes, tags `vX.Y.Z` and
+pushes. **By hand**, as before: `cd /opt/player-jplay && sudo git pull && sudo systemctl restart jplay`.
+Update logs: `journalctl -u jplay-update -n 50`.
 
 ## The web interface
 
@@ -89,6 +111,7 @@ Everything the web page does goes through the API. Interactive docs are at `/api
 | --- | --- | --- |
 | GET | `/api/v1/status` | Active source, now playing, capabilities, volume, all sources |
 | GET | `/api/v1/info` | The player's id (made once, kept when renamed), name and version |
+| GET | `/api/v1/update` | Version, newest release and notes, update progress; POST `/update/check`, `/update/install`; PUT `/update/settings` |
 | POST | `/api/v1/standby` | Stop and go idle: no source active |
 | WS | `/api/v1/events` | Pushes the same snapshot on every change (position at most once a second) |
 | POST | `/api/v1/player/{play,pause,toggle,stop,next,previous}` | Transport for the active source |
@@ -186,7 +209,8 @@ jplay/
   sources/            radio, plex, cd, spotify, bluetooth
   hooks/              librespot event hook
   web/                the web interface (no build step)
-deploy/               installer and systemd units
+deploy/               installer, systemd units, the safe updater (update.sh, install-updater.sh)
+tools/release.ps1     tag and push a release (on the PC)
 tests/                unit tests, Plex integration test, fake Plex server
 custom_components/jplay/   the Home Assistant integration
 tests_homeassistant/  its tests (in a real Home Assistant; own environment)

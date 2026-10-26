@@ -614,6 +614,72 @@ const output = {
             h("option", { value: "", selected: !cur.mixer_control }, "Fixed, use the amplifier's volume"),
             ...controls.map((c) => h("option", { value: c, selected: cur.mixer_control === c }, `DAC control: ${c}`)))
         : h("p", { class: "hint" }, curCard ? `${curCard.name} has no volume control, so the output is fixed. Use the amplifier's volume.` : "Volume settings appear when the DAC is connected."),
+      h("div", { class: "updates" }),
+    ));
+    updates.mount(this.el.querySelector(".updates"));
+  },
+};
+
+// ------------------------------------------------------------------ version and updates (on the Output page)
+const updates = {
+  st: null,
+  fastUntil: 0, // just after pressing a button: look every 2 seconds
+  mount(el) { this.el = el; this.load(); },
+  async load() {
+    clearTimeout(this.timer);
+    if (!this.el || !this.el.isConnected) return; // the page was closed
+    let restarting = false;
+    try {
+      const r = await fetch("/api/v1/update", { cache: "no-store" });
+      if (!r.ok) throw new Error();
+      this.st = await r.json();
+    } catch {
+      restarting = true; // the player restarts during an update
+    }
+    this.draw(restarting);
+    const fast = restarting || this.st?.in_progress || Date.now() < this.fastUntil;
+    this.timer = setTimeout(() => this.load(), fast ? 2000 : 30000);
+  },
+  async act(method, path, body) {
+    try { await api(method, path, body); } catch { /* toast shown */ }
+    this.fastUntil = Date.now() + 90000;
+    this.load();
+  },
+  draw(restarting) {
+    const st = this.st;
+    if (!st) return;
+    const ago = (t) => {
+      if (!t) return "never";
+      const m = Math.floor((Date.now() / 1000 - t) / 60);
+      return m < 1 ? "just now" : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.floor(m / 60)} h ago` : `${Math.floor(m / 1440)} days ago`;
+    };
+    let badge = "Up to date", tone = "", line = st.supported ? `Checked ${ago(st.checked_at)}` : "";
+    if (restarting) badge = "Restarting…";
+    else if (!st.supported) { badge = "Updates not set up"; line = "Run once on the Pi: cd /opt/player-jplay && sudo bash deploy/install-updater.sh"; }
+    else if (st.state === "updating") { badge = "Updating…"; line = st.message; }
+    else if (st.state === "checking") badge = "Checking…";
+    else if (st.state === "failed" || st.state === "rolled_back") { badge = st.state === "rolled_back" ? "Update undone" : "Update failed"; tone = "bad"; line = st.message; }
+    else if (st.available) { badge = `${st.latest} available`; tone = "new"; }
+    else if (st.state === "done" && st.finished_at && Date.now() / 1000 - st.finished_at < 600) line = st.message;
+    const busy = restarting || st.in_progress;
+    const showLog = (st.in_progress || st.state === "failed" || st.state === "rolled_back") && st.log?.length;
+    this.el.replaceChildren(...kids(
+      h("h2", {}, "Version & updates"),
+      h("div", { class: "upd-line" }, h("span", { class: "upd-version" }, `Version ${st.version}`), h("span", { class: `upd-badge ${tone}` }, badge)),
+      line ? h("p", { class: "hint" }, line) : null,
+      st.available && st.notes && !busy ? h("pre", { class: "upd-notes" }, st.notes.replace(/^## /gm, "Version ")) : null,
+      st.supported ? h("div", { class: "upd-buttons" },
+        st.available && !busy ? h("button", { class: "btn primary", onclick: () => confirm(`Update this player to ${st.latest}? Music stops while it restarts (a few seconds).`) && this.act("POST", "/update/install", { target: st.target }) }, `Update to ${st.latest}`) : null,
+        h("button", { class: "btn", disabled: busy, onclick: () => this.act("POST", "/update/check") }, "Check now")) : null,
+      showLog ? h("pre", { class: "upd-log" }, st.log.join("\n")) : null,
+      st.supported ? h("label", { class: "upd-setting" }, "Updates from ",
+        h("select", { class: "select", onchange: (e) => this.act("PUT", "/update/settings", { channel: e.target.value }) },
+          h("option", { value: "releases", selected: st.channel !== "main" }, "Releases (tagged versions)"),
+          h("option", { value: "main", selected: st.channel === "main" }, "Newest commit on GitHub (for development)"))) : null,
+      st.supported ? h("label", { class: "upd-setting check" },
+        h("input", { type: "checkbox", checked: st.auto === "night", onchange: (e) => this.act("PUT", "/update/settings", { auto: e.target.checked ? "night" : "off" }) }),
+        "Install updates automatically at night (03:00–05:00, when nothing plays)") : null,
+      st.supported ? h("p", { class: "hint" }, "If the player doesn't start after an update, the previous version comes back by itself.") : null,
     ));
   },
 };

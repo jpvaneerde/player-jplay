@@ -40,6 +40,17 @@ def device_path_of(path: str) -> str:
     return "/".join(parts[:5]) if len(parts) > 5 else path
 
 
+def explain_adapter_error(error: str, prop: str = "") -> str:
+    """BlueZ's error -> what to do about it."""
+    if "Blocked" in error or "rfkill" in error.lower():
+        return ("Bluetooth is switched off on the Pi (blocked). On the Pi run: "
+                "sudo rfkill unblock bluetooth && sudo systemctl restart bluetooth jplay")
+    if "NotReady" in error or "Powered" in error or prop == "Powered":
+        return ("The Pi's Bluetooth radio won't switch on. On the Pi run: sudo rfkill unblock bluetooth && "
+                "sudo systemctl restart hciuart bluetooth jplay (or reboot the Pi)")
+    return f"Bluetooth refused: {error}"
+
+
 class BluetoothSource(Source):
     id = "bluetooth"
     name = "Bluetooth"
@@ -108,7 +119,8 @@ class BluetoothSource(Source):
             raise SourceError(f"Bluetooth: {reply.error_name}: {reply.body[0] if reply.body else ''}", 502)
         return unwrap(reply.body)
 
-    async def _set_adapter(self, prop: str, sig: str, value: Any) -> None:
+    async def _set_adapter(self, prop: str, sig: str, value: Any, strict: bool = False) -> None:
+        """Change a property of the Pi's Bluetooth adapter. strict: let the error reach the web page."""
         from dbus_next import Variant
 
         try:
@@ -116,6 +128,8 @@ class BluetoothSource(Source):
             self.adapter_props[prop] = value
         except SourceError as exc:
             log.warning("Could not set adapter %s: %s", prop, exc)
+            if strict:
+                raise SourceError(explain_adapter_error(str(exc), prop), 409) from exc
 
     async def _load_objects(self) -> None:
         (objects,) = await self._call("/", OM, "GetManagedObjects")
@@ -317,9 +331,12 @@ class BluetoothSource(Source):
             raise SourceError("No Bluetooth adapter", 409)
         seconds = int(self.cfg.get("discoverable_seconds", 180))
         if on:
+            # Bluetooth may have been switched off since JPlay started (rfkill, a crash of bluetoothd...).
+            await self._set_adapter("Powered", "b", True, strict=True)
             await self._set_adapter("DiscoverableTimeout", "u", seconds)
-            await self._set_adapter("Pairable", "b", True)
-        await self._set_adapter("Discoverable", "b", on)
+            await self._set_adapter("Pairable", "b", True, strict=True)
+        await self._set_adapter("Discoverable", "b", on, strict=True)
+        log.info("Bluetooth pairing %s", f"on for {seconds} s" if on else "off")
         self.ctx.manager.notify(True)
 
     def _path_for(self, address: str) -> str:
